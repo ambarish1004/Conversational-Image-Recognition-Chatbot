@@ -33,10 +33,8 @@ app.post('/upload', upload.single('image'), (req, res) => {
             return res.status(400).json({ success: false, message: 'No file uploaded' });
         }
 
-        const tempFilePath = path.join(tempDir, req.file.originalname);
-
-        const pythonProcess = spawn('python', ['colab_script.py', 'some_argument']);
-
+        const tempFilePath = path.join(tempDir, req.file.filename);
+        const pythonProcess = spawn('python', ['colab_script.py', tempFilePath]);
 
         let result = '';
         pythonProcess.stdout.on('data', data => {
@@ -51,7 +49,13 @@ app.post('/upload', upload.single('image'), (req, res) => {
             if (code === 0) {
                 try {
                     const output = JSON.parse(result);
-                    res.json({ success: true, objects: output.detected_objects });
+                    const processedImagePath = output.processed_image ? `/processed/${path.basename(output.processed_image)}` : null;
+                    
+                    res.json({ 
+                        success: true, 
+                        objects: output.detected_objects, 
+                        processed_image: processedImagePath 
+                    });
                 } catch (err) {
                     console.error(`JSON parse error: ${err}`);
                     res.status(500).json({ success: false, message: 'Invalid JSON output' });
@@ -65,6 +69,8 @@ app.post('/upload', upload.single('image'), (req, res) => {
         res.status(500).json({ success: false, message: 'Server error' });
     }
 });
+
+app.use('/processed', express.static(tempDir));
 
 app.listen(port, () => {
     console.log(`App running at http://localhost:${port}`);
