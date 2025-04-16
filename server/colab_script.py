@@ -116,3 +116,4 @@ def detect_and_draw(image_path, output_path):
 
 # **Run Detection**
 detect_and_draw(image_path, output_path)
+
