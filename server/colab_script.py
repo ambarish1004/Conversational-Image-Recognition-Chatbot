@@ -1,119 +1,159 @@
-import sys
-import json
-import torch
-import cv2
-import numpy as np
-from PIL import Image, ImageDraw
-import os
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import google.generativeai as genai
+const express = require("express");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const { spawn } = require("child_process");
+const cors = require("cors");
+const axios = require("axios");
+require("dotenv").config();
 
-# Google API Configuration (If needed for AI integration)
-genai.configure(api_key="AIzaSyC1m-06YktTukjS6lrbvsCvN6ALZWzjWro")
+const app = express();
+const port = 3001;
 
-if len(sys.argv) < 2:
-    print(json.dumps({"error": "No image path provided"}))
-    sys.exit(1)
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "../public")));
+const apiKey = process.env.OPEN_API_KEY;
 
-image_path = sys.argv[1]
-output_path = image_path.replace(".jpg", "_processed.jpg").replace(".png", "_processed.png")
+const tempDir = path.join(__dirname, "temp");
+if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir);
+}
 
-# **Load YOLOv5 Model**
-def load_yolo_model():
-    try:
-        yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5m', pretrained=True, trust_repo=True)
-        return yolo_model
-    except Exception as e:
-        print(json.dumps({"error": f"Failed to load YOLO model: {e}"}))
-        sys.exit(1)
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, tempDir);
+    },
+    filename: (req, file, cb) => {
+        cb(null, file.originalname);
+    }
+});
 
-yolo_model = load_yolo_model()
+const upload = multer({ storage: storage });
 
-# **Extract Dominant Color from Bounding Box Area**
-def get_dominant_color(image, bbox):
-    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
-    roi = image[y1:y2, x1:x2]
+global.lastDetectedObjects = [];
+global.lastProcessedImage = "";
 
-    if roi.size == 0:
-        return "Unknown"
+// ✅ Updated Python script path here
+const colabScriptPath = path.join(__dirname, "colab_script.py");
 
-    # Convert ROI to a list of pixels
-    pixels = roi.reshape(-1, 3)
-    pixels = np.float32(pixels)
+app.post("/upload", upload.single("image"), (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: "No file uploaded" });
+        }
 
-    # Use KMeans clustering to find the dominant color
-    num_clusters = 3
-    _, labels, centers = cv2.kmeans(pixels, num_clusters, None,
-                                    (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0),
-                                    10, cv2.KMEANS_RANDOM_CENTERS)
+        const tempFilePath = path.join(tempDir, req.file.filename);
 
-    # Find the most common cluster
-    _, counts = np.unique(labels, return_counts=True)
-    dominant_color = centers[np.argmax(counts)]
+        // ✅ Spawn with correct full path
+        const pythonProcess = spawn("python", [colabScriptPath, tempFilePath]);
 
-    # Convert BGR to simple color name
-    return get_color_name(dominant_color)
+        let result = "";
+        pythonProcess.stdout.on("data", data => {
+            result += data.toString();
+        });
 
-# **Map RGB to Basic Color Names**
-def get_color_name(rgb):
-    colors = {
-        "red": (255, 0, 0),
-        "green": (0, 255, 0),
-        "blue": (0, 0, 255),
-        "yellow": (255, 255, 0),
-        "purple": (128, 0, 128),
-        "orange": (255, 165, 0),
-        "black": (0, 0, 0),
-        "white": (255, 255, 255),
-        "gray": (128, 128, 128),
-        "brown": (165, 42, 42)
+        pythonProcess.stderr.on("data", err => {
+            console.error(`Python error: ${err.toString()}`);
+        });
+
+        pythonProcess.on("close", code => {
+            if (code === 0) {
+                try {
+                    const jsonMatch = result.match(/\{.*\}/s);
+                    if (!jsonMatch) {
+                        throw new Error("No valid JSON found in Python script output.");
+                    }
+
+                    const output = JSON.parse(jsonMatch[0]);
+                    console.log("Parsed Python Output:", output);
+
+                    global.lastDetectedObjects = output.detected_objects || [];
+                    global.lastProcessedImage = output.processed_image || "";
+                    global.lastDetectedColors = output.object_colors || {};
+
+                    const processedImagePath = output.processed_image
+                        ? `/processed/${path.basename(output.processed_image)}`
+                        : null;
+
+                    res.json({
+                        success: true,
+                        objects: output.detected_objects,
+                        processed_image: processedImagePath
+                    });
+                } catch (err) {
+                    console.error(`JSON parse error: ${err.message}`);
+                    res.status(500).json({
+                        success: false,
+                        message: "Invalid JSON output from Python script"
+                    });
+                }
+            } else {
+                res.status(500).json({ success: false, message: "Error processing image" });
+            }
+        });
+    } catch (err) {
+        console.error(`Server error: ${err}`);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+app.post("/ask-question", async (req, res) => {
+    const { question } = req.body;
+
+    if (!question || typeof question !== "string") {
+        return res.status(400).json({ success: false, message: "Invalid question input" });
     }
 
-    min_distance = float("inf")
-    closest_color = "Unknown"
-    for color, rgb_val in colors.items():
-        distance = np.linalg.norm(np.array(rgb) - np.array(rgb_val))
-        if distance < min_distance:
-            min_distance = distance
-            closest_color = color
+    const detectedObjects = global.lastDetectedObjects || [];
+    const detectedColors = global.lastDetectedColors || {};
 
-    return closest_color
+    if (question.toLowerCase().includes("what objects") || question.toLowerCase().includes("detected")) {
+        return res.json({ success: true, answer: `I detected these objects: ${detectedObjects.join(", ")}.` });
+    }
 
-# **Detect Objects & Extract Colors**
-def detect_and_draw(image_path, output_path):
-    img_pil = Image.open(image_path)
-    img_cv2 = cv2.imread(image_path)  # Load for OpenCV processing
-    results = yolo_model(img_pil)
-    detection_df = results.pandas().xyxy[0]
+    if (question.toLowerCase().includes("how many")) {
+        const counts = detectedObjects.reduce((acc, obj) => {
+            acc[obj] = (acc[obj] || 0) + 1;
+            return acc;
+        }, {});
 
-    if detection_df.empty:
-        print(json.dumps({"detected_objects": [], "processed_image": None, "object_colors": {}}))
-        return
+        let answer = "Count of detected objects:\n";
+        for (const [object, count] of Object.entries(counts)) {
+            answer += `${object}: ${count}\n`;
+        }
+        return res.json({ success: true, answer });
+    }
 
-    draw = ImageDraw.Draw(img_pil)
-    object_colors = {}
+    if (question.toLowerCase().includes("is there a")) {
+        const objectToFind = question.toLowerCase().replace("is there a", "").trim();
+        const answer = detectedObjects.includes(objectToFind) ? `Yes, a ${objectToFind} is detected.` : `No, a ${objectToFind} is not detected.`;
+        return res.json({ success: true, answer });
+    }
 
-    for _, row in detection_df.iterrows():
-        x1, y1, x2, y2 = row["xmin"], row["ymin"], row["xmax"], row["ymax"]
-        label = row["name"]
+    if (question.toLowerCase().includes("color of")) {
+        const objectToFind = question.toLowerCase().replace("what is the color of", "").trim();
+        const answer = detectedColors[objectToFind] ? `The ${objectToFind} is ${detectedColors[objectToFind]}.` : `I don't have color information for ${objectToFind}.`;
+        return res.json({ success: true, answer });
+    }
 
-        # Extract color for each object
-        dominant_color = get_dominant_color(img_cv2, (x1, y1, x2, y2))
-        object_colors[label] = dominant_color
+    try {
+        const aiResponse = await axios.post("https://api.openai.com/v1/chat/completions", {
+            model: "gpt-4",
+            messages: [{ role: "user", content: question }]
+        }, {     
+            headers: { "Authorization": `Bearer ${apiKey}` }
+        });
 
-        draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-        draw.text((x1, y1 - 10), f"{label} ({dominant_color})", fill="red")
+        return res.json({ success: true, answer: aiResponse.data.choices[0].message.content });
+    } catch (err) {
+        console.error("AI API error:", err);
+        return res.json({ success: true, answer: "I'm unable to answer that question at the moment." });
+    }
+});
 
-    img_pil.save(output_path)
-    detected_objects = detection_df["name"].tolist()
-    
-    # Output JSON with detected objects and colors
-    print(json.dumps({
-        "detected_objects": detected_objects,
-        "processed_image": output_path,
-        "object_colors": object_colors
-    }))
+app.use("/processed", express.static(tempDir));
 
-# **Run Detection**
-detect_and_draw(image_path, output_path)
-
+app.listen(port, () => {
+    console.log(`Server is running on http://localhost:${port}`);
+});
