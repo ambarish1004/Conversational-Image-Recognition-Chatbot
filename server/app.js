@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const cors = require("cors");
-const axios = require("axios"); // For external knowledge-based API calls
+const axios = require("axios");
 
 const app = express();
 const port = 3001;
@@ -29,11 +29,12 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-// Global variable to store last detected objects and their colors
 global.lastDetectedObjects = [];
 global.lastProcessedImage = "";
 
-// **UPLOAD IMAGE & PROCESS OBJECT DETECTION**
+// ✅ Updated Python script path here
+const colabScriptPath = path.join(__dirname, "colab_script.py");
+
 app.post("/upload", upload.single("image"), (req, res) => {
     try {
         if (!req.file) {
@@ -41,7 +42,9 @@ app.post("/upload", upload.single("image"), (req, res) => {
         }
 
         const tempFilePath = path.join(tempDir, req.file.filename);
-        const pythonProcess = spawn("python", ["colab_script.py", tempFilePath]);
+
+        // ✅ Spawn with correct full path
+        const pythonProcess = spawn("python", [colabScriptPath, tempFilePath]);
 
         let result = "";
         pythonProcess.stdout.on("data", data => {
@@ -59,12 +62,13 @@ app.post("/upload", upload.single("image"), (req, res) => {
                     if (!jsonMatch) {
                         throw new Error("No valid JSON found in Python script output.");
                     }
-                    
-                    const output = JSON.parse(jsonMatch[0]); // Extract JSON part
+
+                    const output = JSON.parse(jsonMatch[0]);
                     console.log("Parsed Python Output:", output);
 
                     global.lastDetectedObjects = output.detected_objects || [];
                     global.lastProcessedImage = output.processed_image || "";
+                    global.lastDetectedColors = output.object_colors || {};
 
                     const processedImagePath = output.processed_image
                         ? `/processed/${path.basename(output.processed_image)}`
@@ -92,7 +96,6 @@ app.post("/upload", upload.single("image"), (req, res) => {
     }
 });
 
-// **HANDLE USER QUESTIONS**
 app.post("/ask-question", async (req, res) => {
     const { question } = req.body;
 
@@ -100,16 +103,13 @@ app.post("/ask-question", async (req, res) => {
         return res.status(400).json({ success: false, message: "Invalid question input" });
     }
 
-    // Get detected objects & colors
     const detectedObjects = global.lastDetectedObjects || [];
     const detectedColors = global.lastDetectedColors || {};
 
-    // Answer basic object detection questions
     if (question.toLowerCase().includes("what objects") || question.toLowerCase().includes("detected")) {
         return res.json({ success: true, answer: `I detected these objects: ${detectedObjects.join(", ")}.` });
     }
 
-    // Answer counting questions
     if (question.toLowerCase().includes("how many")) {
         const counts = detectedObjects.reduce((acc, obj) => {
             acc[obj] = (acc[obj] || 0) + 1;
@@ -123,21 +123,18 @@ app.post("/ask-question", async (req, res) => {
         return res.json({ success: true, answer });
     }
 
-    // Answer object presence questions
     if (question.toLowerCase().includes("is there a")) {
         const objectToFind = question.toLowerCase().replace("is there a", "").trim();
         const answer = detectedObjects.includes(objectToFind) ? `Yes, a ${objectToFind} is detected.` : `No, a ${objectToFind} is not detected.`;
         return res.json({ success: true, answer });
     }
 
-    // Answer color-related questions
     if (question.toLowerCase().includes("color of")) {
         const objectToFind = question.toLowerCase().replace("what is the color of", "").trim();
         const answer = detectedColors[objectToFind] ? `The ${objectToFind} is ${detectedColors[objectToFind]}.` : `I don't have color information for ${objectToFind}.`;
         return res.json({ success: true, answer });
     }
 
-    // **General knowledge-based AI response using an external API (Optional)**
     try {
         const aiResponse = await axios.post("https://api.openai.com/v1/chat/completions", {
             model: "gpt-4",
