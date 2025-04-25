@@ -153,5 +153,5 @@ app.post("/ask-question", async (req, res) => {
 app.use("/processed", express.static(tempDir));
 
 app.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
+    console.log(`✅ Server is running on https://imagechatbot.duckdns.org`);
 });
