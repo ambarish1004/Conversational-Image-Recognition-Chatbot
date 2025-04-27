@@ -5,6 +5,7 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const cors = require("cors");
 const axios = require("axios");
+require("dotenv").config();
 
 const app = express();
 const port = 3001;
@@ -12,6 +13,8 @@ const port = 3001;
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "../public")));
+
+const apiKey = process.env.OPEN_API_KEY;
 
 const tempDir = path.join(__dirname, "temp");
 if (!fs.existsSync(tempDir)) {
@@ -31,8 +34,8 @@ const upload = multer({ storage: storage });
 
 global.lastDetectedObjects = [];
 global.lastProcessedImage = "";
+global.lastDetectedColors = {};
 
-// ✅ Updated Python script path here
 const colabScriptPath = path.join(__dirname, "colab_script.py");
 
 app.post("/upload", upload.single("image"), (req, res) => {
@@ -43,7 +46,6 @@ app.post("/upload", upload.single("image"), (req, res) => {
 
         const tempFilePath = path.join(tempDir, req.file.filename);
 
-        // ✅ Spawn with correct full path
         const pythonProcess = spawn("python", [colabScriptPath, tempFilePath]);
 
         let result = "";
@@ -140,7 +142,7 @@ app.post("/ask-question", async (req, res) => {
             model: "gpt-4",
             messages: [{ role: "user", content: question }]
         }, {
-            headers: { "Authorization": `Bearer YOUR_OPENAI_API_KEY` }
+            headers: { "Authorization": `Bearer ${apiKey}` }
         });
 
         return res.json({ success: true, answer: aiResponse.data.choices[0].message.content });
@@ -153,5 +155,5 @@ app.post("/ask-question", async (req, res) => {
 app.use("/processed", express.static(tempDir));
 
 app.listen(port, () => {
-    console.log(`✅ Server is running on https://imagechatbot.duckdns.org on my first DNS`);
+    console.log(`✅ Server is running on http://localhost:${port}`);
 });
